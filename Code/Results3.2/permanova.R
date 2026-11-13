@@ -1,1 +1,128 @@
+library(readxl)
 
+file_path <- "metadata final liver cancer.xlsx"
+
+metadata <- read_excel(
+  path = file_path,
+  sheet = 1
+)
+
+metadata <- subset(metadata, !grepl("m1", RunID))
+
+library(readr)
+
+tax_profile <- read_tsv("combined_all_dataset_genus_level_tables.tsv")
+tax_profile <- as.data.frame(tax_profile)
+names(tax_profile)[1] <- "taxon"
+rownames(tax_profile) <- tax_profile$taxon
+
+tax_profile <- tax_profile[,-1]
+
+tax_profile <- tax_profile[,names(tax_profile) %in% metadata$RunID]
+
+tax_profile <- tax_profile[rowSums(tax_profile != 0) > 0, ]
+
+tax_profile <- tax_profile[-1,]
+
+rel_abund <- sweep(tax_profile, 2, colSums(tax_profile), FUN = "/")
+
+library(Rtsne)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(vegan)
+
+abundance <- as.data.frame(t(rel_abund))
+
+filtered_transformed_abundance <- abundance %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("SampleID") %>%
+  tidyr::pivot_longer(cols = -SampleID, names_to = "Taxon", values_to = "Abundance") %>%
+  group_by(Taxon) %>%
+  mutate(
+    Prevalence = mean(Abundance > 0),
+    MeanAbundance = mean(Abundance)
+  ) %>%
+  ungroup() %>%
+  filter(Prevalence > 0.1, MeanAbundance > 0.0001) %>%
+  select(SampleID, Taxon, Abundance) %>%
+  tidyr::pivot_wider(names_from = Taxon, values_from = Abundance) %>%
+  tibble::column_to_rownames("SampleID") %>%
+  apply(2, function(x) asin(sqrt(x/100)))
+
+set.seed(123)
+tsne_result <- Rtsne(
+  filtered_transformed_abundance,
+  dims = 2,
+  perplexity = 30,
+  theta = 0.0,
+  verbose = TRUE,
+  max_iter = 1000
+)
+
+plot_data <- data.frame(
+  RunID = rownames(filtered_transformed_abundance),
+  tSNE1 = tsne_result$Y[, 1],
+  tSNE2 = tsne_result$Y[, 2]
+) %>%
+  left_join(metadata, by = "RunID")
+
+plot_data2 <- plot_data
+rownames(plot_data2) <- plot_data2$RunID
+
+library(vegan)
+
+dist_matrix <- vegdist(filtered_transformed_abundance, method = "bray")
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+rownames(plot_data) <- plot_data$RunID
+
+names(plot_data)[5] <- "Group"
+names(plot_data)[7] <- "Location"
+names(plot_data)[6] <- "ProjectID"
+
+data_perma <- plot_data[,c(1,5,6,7,8,26)]
+
+data_perma[2:6] <- lapply(data_perma[2:6], as.factor)
+
+permanova_result <- adonis2(
+  dist_matrix ~ Group + ProjectID ,
+  data = data_perma,
+  permutations = 999,
+  by = "margin"
+)
+
+permanova_df <- as.data.frame(permanova_result) %>%
+  tibble::rownames_to_column("Factor") %>%
+  filter(Factor != "Total") %>%
+  mutate(
+    Significance = case_when(
+      `Pr(>F)` < 0.001 ~ "***",
+      `Pr(>F)` < 0.01 ~ "**",
+      `Pr(>F)` < 0.05 ~ "*",
+      TRUE ~ "ns"
+    ),
+    Factor = factor(Factor, levels = rev(Factor))
+  )
+
+print(permanova_result)
+
+permanova_plot <- ggplot(permanova_df, aes(x = reorder(Factor, R2), y = R2, fill = R2)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = sprintf("%.3f %s", R2, Significance)), 
+            hjust = -0.1, size = 4) +
+  scale_fill_gradient(low = "#4B9CD3", high = "#13294B") +
+  labs(title = "PERMANOVA Results: Variance Explained",
+       x = "Explanatory Variables",
+       y = expression(paste("R"^2, " (Variance Explained)")),
+       caption = "Significance: *** p<0.001; ** p<0.01; * p<0.05; ns not significant") +
+  coord_flip(ylim = c(0, max(permanova_df$R2) * 1.15)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none",
+    panel.grid.major.y = element_blank()
+  )
