@@ -1,4 +1,4 @@
-# Cross-cohort analyses reveal gut microbiome signatures associated with hepatocellular carcinoma
+# Gut microbiome signatures for hepatocellular carcinoma diagnosis and risk stratification: a multi-cohort integrative analysis
 
 ## The public HCC datasets we used
 
